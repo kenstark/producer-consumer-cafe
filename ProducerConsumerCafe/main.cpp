@@ -31,11 +31,14 @@ void barista(int id) {
         std::string coffee = random_coffee();
 
         empty_slots.acquire();
+
+        {
+            
         std::lock_guard<std::mutex> lock(counter_mutex);
 
         counter.push(coffee);
         std::cout << "Barista " << id << " made: " << coffee << " | Counter has " << counter.size() << " coffees." << std::endl;
-
+        }
         full_slots.release();
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500 + rand() % 1500));
