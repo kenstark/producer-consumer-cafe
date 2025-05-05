@@ -1,9 +1,3 @@
-//
-//  main.cpp
-//  ProducerConsumerCafe
-//
-
-
 #include <iostream>
 #include <thread>
 #include <mutex>
@@ -13,19 +7,15 @@
 #include <chrono>
 #include <random>
 
-
 std::mutex counter_mutex;
 std::mutex log_mutex;
+
 std::counting_semaphore<5> empty_slots(5);
 std::counting_semaphore<5> full_slots(0);
 
 std::queue<std::string> counter;
 std::vector<std::string> coffee_types = {"Espresso", "Latte", "Cappuccino", "Mocha", "Americano"};
 
-void log(const std::string& msg) {
-    std::lock_guard<std::mutex> lock(log_mutex);
-    std::cout << msg << std::endl;
-}
 std::string random_coffee() {
     int idx = rand() % coffee_types.size();
     return coffee_types[idx];
@@ -36,13 +26,11 @@ void barista(int id) {
         std::string coffee = random_coffee();
 
         empty_slots.acquire();
-
         {
-            
-        std::lock_guard<std::mutex> lock(counter_mutex);
-
-        counter.push(coffee);
-        std::cout << "Barista " << id << " made: " << coffee << " | Counter has " << counter.size() << " coffees." << std::endl;
+            std::lock_guard<std::mutex> lock(counter_mutex);
+            counter.push(coffee);
+            std::cout << "Barista " << id << " made: " << coffee
+                      << " | Counter has " << counter.size() << " coffees." << std::endl;
         }
         full_slots.release();
 
@@ -55,31 +43,31 @@ void customer(int id) {
     while (true) {
         full_slots.acquire();
         {
-        std::lock_guard<std::mutex> lock(counter_mutex);
+            std::lock_guard<std::mutex> lock(counter_mutex);
 
-        bool found = false;
-        std::queue<std::string> temp;
+            bool found = false;
+            std::queue<std::string> temp;
 
-        while (!counter.empty()) {
-            std::string item = counter.front();
-            counter.pop();
-            if (!found && item == preferred) {
-                found = true;
-                std::cout << "Customer " << id << " got preferred: " << item << std::{;
-            } else {
-                temp.push(item);
+            while (!counter.empty()) {
+                std::string item = counter.front();
+                counter.pop();
+                if (!found && item == preferred) {
+                    found = true;
+                    std::cout << "Customer " << id << " got preferred: " << item << std::endl;
+                } else {
+                    temp.push(item);
+                }
+            }
+
+            while (!temp.empty()) {
+                counter.push(temp.front());
+                temp.pop();
+            }
+
+            if (!found) {
+                std::cout << "Customer " << id << " couldn't find " << preferred << " and left." << std::endl;
             }
         }
-
-        while (!temp.empty()) {
-            counter.push(temp.front());
-            temp.pop();
-        }
-
-        if (!found) {
-            std::cout << "Customer " << id << " couldn't find " << preferred << " and left." << std::endl;
-        }
-
         empty_slots.release();
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     }
@@ -107,23 +95,17 @@ int main() {
     std::vector<std::thread> customers;
 
     for (int i = 0; i < 2; i++) {
-        baristas.push_back(std::thread(barista, i+1));
+        baristas.emplace_back(barista, i + 1);
     }
     for (int i = 0; i < 3; i++) {
-        customers.push_back(std::thread(customer, i+1));
+        customers.emplace_back(customer, i + 1);
     }
+
     std::thread observer(print_counter_state);
-    
-    observer.detach(); 
+    observer.detach();
 
-
-    for (auto& b : baristas) {
-        b.join();
-    }
-    for (auto& c : customers) {
-        c.join();
-    }
+    for (auto& b : baristas) b.join();
+    for (auto& c : customers) c.join();
 
     return 0;
 }
-
