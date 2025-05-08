@@ -1,203 +1,223 @@
 #include <iostream>
+#include <vector>
+#include <string>
+#include <limits>
+#include <map>
 #include <thread>
 #include <mutex>
-#include <semaphore>
-#include <queue>
-#include <vector>
-#include <chrono>
-#include <random>
-#include <map>
-#include <cstdlib>
-#include <atomic>
+#include <semaphore>  // C++20 semaphore
 
-std::mutex counter_mutex;
-std::mutex log_mutex;
-std::mutex revenue_mutex;
-std::counting_semaphore<5> empty_slots(5);
-std::counting_semaphore<5> full_slots(0);
+using namespace std;
 
-// Track total revenue
-int totalRevenue = 0;
+mutex mtx;  // Mutex to protect shared resource (console output)
+std::counting_semaphore<2> availableBaristas(2); // Semaphore to limit concurrent customers (2 baristas)
 
-// Atomic flag to control when to end the simulation
-std::atomic<bool> running = true;
-
-enum ItemType { COFFEE, CAKE, SANDWICH };
-
-struct Item {
-    ItemType type;
-    std::string name;
+// Structure to store item details (name and price)
+struct OrderItem {
+    string name;
     int price;
 };
 
-std::queue<Item> counter;
-
-std::vector<std::string> coffee_sizes = {"Small", "Medium", "Large"};
-std::map<std::string, int> coffee_prices = {{"Small", 3}, {"Medium", 5}, {"Large", 7}};
-
-std::vector<std::string> cakes = {"Cheesecake", "Carrot Cake", "Red Velvet", "Sponge", "Plain", "Corn Bread"};
-std::vector<int> cake_prices = {3, 4, 5};
-int full_cake_price = 15;
-
-std::vector<std::string> sandwiches = {"BLT", "Caesar Salad", "Chicken", "Ham & Cheese", "Grilled Cheese", "Egg Bacon & Cheese", "Bagel"};
-int sandwich_price = 8;
-int topping_price = 1;
-
-std::string random_choice(const std::vector<std::string>& options) {
-    return options[rand() % options.size()];
+// Function to clear invalid input
+void clearInput() {
+    cin.clear();
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
 }
 
-void log(const std::string& msg) {
-    std::lock_guard<std::mutex> lock(log_mutex);
-    std::cout << msg << std::endl;
+// Function to choose a valid option from a list of options
+int chooseOption(const vector<string>& options, const string& prompt) {
+    int choice;
+    while (true) {
+        cout << prompt << endl;
+        for (size_t i = 0; i < options.size(); ++i) {
+            cout << i + 1 << ". " << options[i] << endl;
+        }
+        cout << "Your choice: ";
+        cin >> choice;
+        if (cin.fail() || choice < 1 || choice > options.size()) {
+            clearInput();
+            cout << "Invalid input. Try again.\n";
+        } else {
+            break;
+        }
+    }
+    return choice;
 }
 
-void barista(int id) {
-    while (running) {
-        // Try to acquire with a timeout to check if simulation should end
-        if (!empty_slots.try_acquire_for(std::chrono::milliseconds(500))) {
-            if (!running) return;
-            continue;
-        }
+// Function to order coffee
+int getCoffee(vector<OrderItem>& order) {
+    vector<string> types = {"Espresso", "Latte", "Cappuccino", "Americano", "Flat White", "Cold Brew"};
+    vector<string> sizes = {"Small ($3)", "Medium ($5)", "Large ($7)"};
+    vector<int> sizePrices = {3, 5, 7};
 
-        if (!running) {
-            empty_slots.release();
-            return;
-        }
+    int type = chooseOption(types, "\n☕ Choose your coffee type:") - 1;
+    int size = chooseOption(sizes, "\n☕ Choose your coffee size:") - 1;
 
-        Item item;
-        int kind = rand() % 3;
-        if (kind == 0) { // coffee
-            std::string size = random_choice(coffee_sizes);
-            item = {COFFEE, size + " Coffee", coffee_prices[size]};
-        } else if (kind == 1) { // cake
-            std::string cake = random_choice(cakes);
-            bool full = (rand() % 5 == 0);
-            if (full) {
-                item = {CAKE, "Whole " + cake, full_cake_price};
-            } else {
-                item = {CAKE, cake + " Slice", cake_prices[rand() % cake_prices.size()]};
-            }
-        } else { // sandwich
-            std::string s = random_choice(sandwiches);
-            int toppings = rand() % 4; // up to 3 extra toppings
-            item = {SANDWICH, s + (toppings ? " +" + std::to_string(toppings) + " toppings" : ""), sandwich_price + toppings * topping_price};
-        }
+    order.push_back({sizes[size] + " " + types[type] + " Coffee", sizePrices[size]});
+    return sizePrices[size];
+}
 
-        {
-            std::lock_guard<std::mutex> lock(counter_mutex);
-            counter.push(item);
-            log("Barista " + std::to_string(id) + " prepared: " + item.name + " ($" + std::to_string(item.price) + ")");
-        }
+// Function to order cake
+int getCake(vector<OrderItem>& order) {
+    vector<string> cakes = {
+        "Chocolate Cake ($2)",
+        "Cheesecake ($4)",
+        "Red Velvet ($4)",
+        "Carrot Cake ($3)",
+        "Vanilla Cake ($2)",
+        "Strawberry Cake ($3)",
+        "Lemon Cake ($1)"
+    };
+    vector<int> cakePrices = {2, 4, 4, 3, 2, 3, 1};
 
-        full_slots.release();
-        std::this_thread::sleep_for(std::chrono::milliseconds(500 + rand() % 1500));
+    int cakeChoice = chooseOption(cakes, "\n🍰 Choose your cake slice:") - 1;
+
+    string wholeCakeReply;
+    cout << "\n🧁 Barista: Would you like to make it an entire cake for $20? (y/n): ";
+    cin >> wholeCakeReply;
+
+    string cakeName = cakes[cakeChoice];
+    cakeName = cakeName.substr(0, cakeName.find(" ($")); // Strip price from name
+
+    if (wholeCakeReply == "y" || wholeCakeReply == "Y") {
+        order.push_back({"Whole " + cakeName, 20});
+        return 20;
+    } else {
+        order.push_back({"Slice of " + cakeName, cakePrices[cakeChoice]});
+        return cakePrices[cakeChoice];
     }
 }
 
-void customer(int id) {
-    // Each customer has a random patience level (2-5 seconds)
-    int patience = 2000 + (rand() % 3000);
-    
-    while (running) {
-        // Try to acquire with a timeout based on patience
-        bool got_item = full_slots.try_acquire_for(std::chrono::milliseconds(patience));
-        
-        if (!running) return;
-        
-        if (!got_item) {
-            // Customer got impatient and left
-            log("Customer " + std::to_string(id) + " got impatient and left without buying anything!");
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000 + rand() % 2000));
-            continue;
-        }
-        
-        Item item;
-        bool valid_item = false;
+// Function to order sandwich
+int getSandwich(vector<OrderItem>& order) {
+    vector<string> sandwiches = {"BLT", "Caesar Salad", "Chicken", "Ham & Cheese", "Grilled Cheese", "Egg Bacon & Cheese", "Bagel"};
+    vector<string> sides = {"Bacon ($2)", "Cheese ($1)", "Chips ($1)", "Fries ($2)", "Lettuce ($1)", "Salad ($2)", "Tomato ($1)"};
+    vector<int> sidePrices = {2, 1, 1, 2, 1, 2, 1};
 
-        {
-            std::lock_guard<std::mutex> lock(counter_mutex);
-            if (!counter.empty()) {
-                item = counter.front();
-                counter.pop();
-                valid_item = true;
-            }
-        }
+    int sandwich = chooseOption(sandwiches, "\n🥪 Choose your sandwich:") - 1;
+    order.push_back({sandwiches[sandwich] + " Sandwich", 5});
 
-        if (valid_item) {
-            log("Customer " + std::to_string(id) + " bought: " + item.name + " for $" + std::to_string(item.price));
-            
-            // Update total revenue
-            {
-                std::lock_guard<std::mutex> lock(revenue_mutex);
-                totalRevenue += item.price;
-            }
-            
-            empty_slots.release();
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000 + rand() % 2000));
+    cout << "\n🍟 Add sides (up to 5, enter numbers separated by spaces, 0 to finish):\n";
+    for (size_t i = 0; i < sides.size(); ++i) {
+        cout << i + 1 << ". " << sides[i] << endl;
     }
+
+    vector<bool> chosen(7, false);
+    int sideChoice;
+    int sideTotal = 0;
+    int sideCount = 0;
+
+    clearInput();
+    while (sideCount < 5) {
+        cout << "Enter side number (0 to finish): ";
+        cin >> sideChoice;
+        if (sideChoice == 0) break;
+        if (sideChoice < 1 || sideChoice > 7 || chosen[sideChoice - 1]) {
+            cout << "Invalid or duplicate choice. Try again.\n";
+        } else {
+            chosen[sideChoice - 1] = true;
+            order.push_back({sides[sideChoice - 1], sidePrices[sideChoice - 1]});
+            sideTotal += sidePrices[sideChoice - 1];
+            sideCount++;
+        }
+    }
+    return 5 + sideTotal;
 }
 
-void print_counter_state() {
-    while (running) {
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-        std::lock_guard<std::mutex> lock(counter_mutex);
-        std::queue<Item> temp = counter;
-        std::cout << "\n=== Counter State ===" << std::endl;
-        int i = 1;
-        while (!temp.empty()) {
-            Item item = temp.front();
-            std::cout << i++ << ". " << item.name << " ($" << item.price << ")" << std::endl;
-            temp.pop();
-        }
-        
-        // Display current revenue
-        {
-            std::lock_guard<std::mutex> revenue_lock(revenue_mutex);
-            std::cout << "Current Total Revenue: $" << totalRevenue << std::endl;
-        }
-        
-        std::cout << "=====================\n" << std::endl;
-    }
-}
+// Function to process a customer's order
+void processCustomer(int customerId) {
+    availableBaristas.acquire(); // Limit the number of concurrently running threads (customers)
 
-// Timer to end the simulation after 30 seconds
-void timer() {
-    std::this_thread::sleep_for(std::chrono::seconds(30));
-    log("\n*** SIMULATION TIME EXPIRED (30 seconds) ***\n");
-    running = false;
+    lock_guard<mutex> lock(mtx);  // Locking to ensure thread-safe output
+
+    vector<OrderItem> order;
+    int total = 0;
+    bool comboChosen = false;
+
+    cout << "👋 Barista: Hello there, glad you came to Cafe Tech!\n\n";
+
+    vector<string> greetings = {"Hello!", "Hey there!", "How's your day going?", "I'm in a rush!"};
+    int greetChoice = chooseOption(greetings, "🧍 You, the customer, choose a greeting:");
+    cout << "\n🧍 You: " << greetings[greetChoice - 1] << endl;
+
+    // Main menu with Stop option
+    vector<string> mainOptions = {"Coffee", "Cake", "Sandwich", "Combo (any two or all three)", "Order all 3 items", "Stop"};
+    int mainChoice = chooseOption(mainOptions, "\n🧑‍🍳 Barista: What would you like to order?");
+
+    // Stop option handling
+    if (mainChoice == 6) {
+        cout << "\n🛑 Barista: Thanks for visiting! Have a great day!\n";
+        availableBaristas.release();  // Release semaphore and exit
+        return;
+    }
+
+    if (mainChoice == 4) {
+        comboChosen = true;
+        cout << "\n🍽️ Great choice! Let's get a combo!\n";
+        for (int i = 0; i < 2; ++i) {
+            cout << "\n🧑‍🍳 Barista: Please choose item " << (i + 1) << ":\n";
+            int comboPick = chooseOption({"Coffee", "Cake", "Sandwich"}, "Choose your item:");
+            if (comboPick == 1) total += getCoffee(order);
+            else if (comboPick == 2) total += getCake(order);
+            else total += getSandwich(order);
+        }
+        cout << "🎉 Barista: Great choice! You've ordered a combo. You've saved $2!\n";
+        total -= 2;
+    } else if (mainChoice == 5) {
+        cout << "\n🍽️ Ordering all 3 items!\n";
+        total += getCoffee(order);
+        total += getCake(order);
+        total += getSandwich(order);
+    } else {
+        if (mainChoice == 1) total += getCoffee(order);
+        else if (mainChoice == 2) total += getCake(order);
+        else total += getSandwich(order);
+
+        string comboReply;
+        cout << "\n🧑‍🍳 Barista: Would you like to make it a combo for $2 off? (y/n): ";
+        cin >> comboReply;
+        clearInput();
+        if (comboReply == "y" || comboReply == "Y") {
+            comboChosen = true;
+            int secondChoice = chooseOption({"Coffee", "Cake", "Sandwich"}, "\n🍽️ Choose your second item:");
+            if (secondChoice == 1) total += getCoffee(order);
+            else if (secondChoice == 2) total += getCake(order);
+            else total += getSandwich(order);
+            cout << "🎉 Barista: Great choice! You've made it a combo and saved $2!\n";
+            total -= 2;
+        }
+    }
+
+    cout << "\n🏨 Barista: Here's your order summary:\n";
+    for (auto& item : order) {
+        cout << "- " << item.name << " ($" << item.price << ")\n";
+    }
+
+    cout << "\n💳 Barista: Your total is $" << total << ".\n";
+
+    string payment;
+    cout << "\n👨‍🏫 Barista: Cash or card? ";
+    cin >> payment;
+    cout << "\n🙏 Thank you for your payment via " << payment << "! Enjoy your order!\n\n";
+
+    availableBaristas.release();  // Release the semaphore to allow another customer to be processed
 }
 
 int main() {
-    srand(time(0));
+    int customerCount = 5;  // Simulating 5 customers for the example
 
-    std::vector<std::thread> baristas;
-    std::vector<std::thread> customers;
-
-    // Start the timer
-    std::thread timer_thread(timer);
-    timer_thread.detach();
-
-    for (int i = 0; i < 2; i++) {
-        baristas.emplace_back(barista, i + 1);
-    }
-    for (int i = 0; i < 6; i++) {
-        customers.emplace_back(customer, i + 1);
+    // Creating threads for multiple customers
+    vector<thread> threads;
+    for (int i = 0; i < customerCount; ++i) {
+        threads.push_back(thread(processCustomer, i + 1));
     }
 
-    std::thread observer(print_counter_state);
-
-    // Join all threads (they'll terminate when running becomes false)
-    for (auto& b : baristas) b.join();
-    for (auto& c : customers) c.join();
-    observer.join();
-
-    // Print final statistics
-    std::cout << "\n=== FINAL STATISTICS ===" << std::endl;
-    std::cout << "Total Revenue: $" << totalRevenue << std::endl;
-    std::cout << "=====================\n" << std::endl;
+    // Wait for all customers to be processed
+    for (auto& t : threads) {
+        t.join();
+    }
 
     return 0;
 }
+
+
