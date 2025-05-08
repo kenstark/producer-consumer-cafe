@@ -8,11 +8,19 @@
 #include <random>
 #include <map>
 #include <cstdlib>
+#include <atomic>
 
 std::mutex counter_mutex;
 std::mutex log_mutex;
-std::counting_semaphore<10> empty_slots(10);
-std::counting_semaphore<10> full_slots(0);
+std::mutex revenue_mutex;
+std::counting_semaphore<5> empty_slots(5);
+std::counting_semaphore<5> full_slots(0);
+
+// Track total revenue
+int totalRevenue = 0;
+
+// Atomic flag to control when to end the simulation
+std::atomic<bool> running = true;
 
 enum ItemType { COFFEE, CAKE, SANDWICH };
 
@@ -45,8 +53,17 @@ void log(const std::string& msg) {
 }
 
 void barista(int id) {
-    while (true) {
-        empty_slots.acquire();
+    while (running) {
+        // Try to acquire with a timeout to check if simulation should end
+        if (!empty_slots.try_acquire_for(std::chrono::milliseconds(500))) {
+            if (!running) return;
+            continue;
+        }
+
+        if (!running) {
+            empty_slots.release();
+            return;
+        }
 
         Item item;
         int kind = rand() % 3;
@@ -79,26 +96,52 @@ void barista(int id) {
 }
 
 void customer(int id) {
-    while (true) {
-        full_slots.acquire();
+    // Each customer has a random patience level (2-5 seconds)
+    int patience = 2000 + (rand() % 3000);
+    
+    while (running) {
+        // Try to acquire with a timeout based on patience
+        bool got_item = full_slots.try_acquire_for(std::chrono::milliseconds(patience));
+        
+        if (!running) return;
+        
+        if (!got_item) {
+            // Customer got impatient and left
+            log("Customer " + std::to_string(id) + " got impatient and left without buying anything!");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000 + rand() % 2000));
+            continue;
+        }
+        
         Item item;
+        bool valid_item = false;
 
         {
             std::lock_guard<std::mutex> lock(counter_mutex);
             if (!counter.empty()) {
                 item = counter.front();
                 counter.pop();
+                valid_item = true;
             }
         }
 
-        log("Customer " + std::to_string(id) + " bought: " + item.name + " for $" + std::to_string(item.price));
-        empty_slots.release();
+        if (valid_item) {
+            log("Customer " + std::to_string(id) + " bought: " + item.name + " for $" + std::to_string(item.price));
+            
+            // Update total revenue
+            {
+                std::lock_guard<std::mutex> lock(revenue_mutex);
+                totalRevenue += item.price;
+            }
+            
+            empty_slots.release();
+        }
+        
         std::this_thread::sleep_for(std::chrono::milliseconds(1000 + rand() % 2000));
     }
 }
 
 void print_counter_state() {
-    while (true) {
+    while (running) {
         std::this_thread::sleep_for(std::chrono::seconds(3));
         std::lock_guard<std::mutex> lock(counter_mutex);
         std::queue<Item> temp = counter;
@@ -109,8 +152,22 @@ void print_counter_state() {
             std::cout << i++ << ". " << item.name << " ($" << item.price << ")" << std::endl;
             temp.pop();
         }
+        
+        // Display current revenue
+        {
+            std::lock_guard<std::mutex> revenue_lock(revenue_mutex);
+            std::cout << "Current Total Revenue: $" << totalRevenue << std::endl;
+        }
+        
         std::cout << "=====================\n" << std::endl;
     }
+}
+
+// Timer to end the simulation after 30 seconds
+void timer() {
+    std::this_thread::sleep_for(std::chrono::seconds(30));
+    log("\n*** SIMULATION TIME EXPIRED (30 seconds) ***\n");
+    running = false;
 }
 
 int main() {
@@ -119,18 +176,28 @@ int main() {
     std::vector<std::thread> baristas;
     std::vector<std::thread> customers;
 
+    // Start the timer
+    std::thread timer_thread(timer);
+    timer_thread.detach();
+
     for (int i = 0; i < 2; i++) {
         baristas.emplace_back(barista, i + 1);
     }
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 6; i++) {
         customers.emplace_back(customer, i + 1);
     }
 
     std::thread observer(print_counter_state);
-    observer.detach();
 
+    // Join all threads (they'll terminate when running becomes false)
     for (auto& b : baristas) b.join();
     for (auto& c : customers) c.join();
+    observer.join();
+
+    // Print final statistics
+    std::cout << "\n=== FINAL STATISTICS ===" << std::endl;
+    std::cout << "Total Revenue: $" << totalRevenue << std::endl;
+    std::cout << "=====================\n" << std::endl;
 
     return 0;
 }
